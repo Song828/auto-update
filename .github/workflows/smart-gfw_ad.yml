@@ -1,4 +1,4 @@
-name: Update SmartDNS Rules (GFW+AD)
+name: Update SmartDNS Rules（GFW+AD）
 
 on:
   schedule:
@@ -7,6 +7,9 @@ on:
 
 jobs:
   build:
+    # ↓↓↓ 在这里添加权限设置 ↓↓↓
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
