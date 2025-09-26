@@ -81,13 +81,13 @@ jobs:
           echo "Notifying OpenWrt device..."
           curl --fail --connect-timeout 10 --max-time 30 -X POST \
             -H "X-Hook-Secret: ${{ secrets.OPENWRT_WEBHOOK_SECRET }}" \
-            -H "Content-Length: 0" \ # <--- 为 OpenWrt 添加此行
+            -H "Content-Length: 0" \
             "${{ secrets.OPENWRT_WEBHOOK_URL }}"
             
           echo "Notifying Ubuntu device..."
           curl --fail --connect-timeout 10 --max-time 30 -X POST \
             -H "X-Hook-Secret: ${{ secrets.UBUNRU_WEBHOOK_SECRET }}" \
-            -H "Content-Length: 0" \ # <--- 为 Ubuntu 添加此行
+            -H "Content-Length: 0" \
             "${{ secrets.UBUNTU_WEBHOOK_URL }}"
 
       - name: Job Summary
