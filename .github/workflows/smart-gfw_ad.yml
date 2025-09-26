@@ -1,0 +1,95 @@
+name: Update SmartDNS Rules (GFW+AD)
+
+on:
+  schedule:
+    - cron: "0 */1 * * *"   # 每小时运行一次（UTC时间）
+  workflow_dispatch:       # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y wget
+
+      - name: Build gfw.conf
+        run: bash build-gfw.sh
+
+      - name: Check for all file changes
+        id: git-check
+        run: |
+          # 定义文件名
+          GFW_FILE="gfw.conf"
+          AD_BLACKLIST="anti-ad-for-smartdns.conf"
+          AD_WHITELIST="anti-ad-white-for-smartdns.conf"
+          
+          # 定义远程URL
+          AD_BLACKLIST_URL="https://anti-ad.net/anti-ad-for-smartdns.conf"
+          AD_WHITELIST_URL="https://raw.githubusercontent.com/privacy-protection-tools/dead-horse/master/anti-ad-white-for-smartdns.txt"
+
+          # 初始化变更标记
+          HAS_CHANGES=false
+          
+          # 1. 检查 GFW 规则
+          if ! diff -q <(tail -n +2 "$GFW_FILE") <(git show HEAD:"$GFW_FILE" 2>/dev/null | tail -n +2); then
+            echo "::notice::GFW 规则有更新."
+            HAS_CHANGES=true
+          fi
+          
+          # 2. 检查广告黑名单
+          wget -q -O "$AD_BLACKLIST" "$AD_BLACKLIST_URL"
+          if ! diff -q "$AD_BLACKLIST" <(git show HEAD:"$AD_BLACKLIST" 2>/dev/null); then
+            echo "::notice::广告黑名单有更新."
+            HAS_CHANGES=true
+          fi
+
+          # 3. 检查广告白名单
+          wget -q -O "$AD_WHITELIST" "$AD_WHITELIST_URL"
+          if ! diff -q "$AD_WHITELIST" <(git show HEAD:"$AD_WHITELIST" 2>/dev/null); then
+            echo "::notice::广告白名单有更新."
+            HAS_CHANGES=true
+          fi
+          
+          # 根据最终标记设置输出
+          if [ "$HAS_CHANGES" == "true" ]; then
+            echo "changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "::notice::所有规则均无更新，跳过提交。"
+            echo "changes=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push if changed
+        id: push_step
+        if: steps.git-check.outputs.changes == 'true'
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git add gfw.conf anti-ad-for-smartdns.conf anti-ad-white-for-smartdns.conf
+          # 只提交有变动的文件，避免空提交
+          git commit -m "Auto update SmartDNS rules at $(date '+%F %T')"
+          git push
+
+      - name: Notify clients to update
+        if: steps.push_step.outcome == 'success'
+        run: |
+          echo "Notifying OpenWrt device..."
+          curl --fail --connect-timeout 10 --max-time 30 -X POST \
+            -H "X-Hook-Secret: ${{ secrets.OPENWRT_WEBHOOK_SECRET }}" \
+            "${{ secrets.OPENWRT_WEBHOOK_URL }}"
+            
+          echo "Notifying Ubuntu device..."
+          curl --fail --connect-timeout 10 --max-time 30 -X POST \
+            -H "X-Hook-Secret: ${{ secrets.UBUNTU_WEBHOOK_SECRET }}" \
+            "${{ secrets.UBUNTU_WEBHOOK_URL }}"
+
+      - name: Job Summary
+        if: always()
+        run: |
+          if [[ ${{ steps.git-check.outputs.changes }} == 'true' ]]; then
+            echo "✅ 本次运行完成：检测到规则更新，并已成功推送到仓库和客户端。"
+          else
+            echo "☑️ 本次运行完成：规则列表无变化，未执行任何推送操作。"
+          fi
