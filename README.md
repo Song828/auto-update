@@ -1,0 +1,10 @@
+1、设置中添加变量：
+OPENWRT_WEBHOOK_SECRET
+密钥
+OPENWRT_WEBHOOK_URL
+http://example.com:8888/hooks/update-smartdns-rules
+UBUNTU_WEBHOOK_SECRET
+密钥
+UBUNTU_WEBHOOK_URL
+http://example.com:8888/hooks/update-smartdns-rules
+2、复制webhook文件夹到本地
