@@ -1,0 +1,13 @@
+[Unit]
+Description=Webhook
+After=network.target
+
+[Service]
+#User=root
+User=G
+Group=G
+ExecStart=/App/webhook/webhook -hooks /App/webhook/webhook.conf -verbose -port 8889
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
