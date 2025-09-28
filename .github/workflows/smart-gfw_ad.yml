@@ -75,20 +75,20 @@ jobs:
           git commit -m "Auto update SmartDNS rules at $(date '+%F %T')"
           git push
 
-      - name: Notify clients to update
-        if: steps.push_step.outcome == 'success'
-        run: |
-          echo "Notifying OpenWrt device..."
-          curl --fail --connect-timeout 10 --max-time 30 -X POST \
-            -H "X-Hook-Secret: ${{ secrets.OPENWRT_WEBHOOK_SECRET }}" \
-            -H "Content-Length: 0" \
-            "${{ secrets.OPENWRT_WEBHOOK_URL }}"
+ #     - name: Notify clients to update
+ #       if: steps.push_step.outcome == 'success'
+ #       run: |
+ #         echo "Notifying OpenWrt device..."
+ #         curl --fail --connect-timeout 10 --max-time 30 -X POST \
+ #           -H "X-Hook-Secret: ${{ secrets.OPENWRT_WEBHOOK_SECRET }}" \
+ #           -H "Content-Length: 0" \
+ #           "${{ secrets.OPENWRT_WEBHOOK_URL }}"
             
-          echo "Notifying Ubuntu device..."
-          curl --fail --connect-timeout 10 --max-time 30 -X POST \
-            -H "X-Hook-Secret: ${{ secrets.UBUNRU_WEBHOOK_SECRET }}" \
-            -H "Content-Length: 0" \
-            "${{ secrets.UBUNTU_WEBHOOK_URL }}"
+ #         echo "Notifying Ubuntu device..."
+ #         curl --fail --connect-timeout 10 --max-time 30 -X POST \
+ #           -H "X-Hook-Secret: ${{ secrets.UBUNRU_WEBHOOK_SECRET }}" \
+ #           -H "Content-Length: 0" \
+ #           "${{ secrets.UBUNTU_WEBHOOK_URL }}"
 
       - name: Job Summary
         if: always()
