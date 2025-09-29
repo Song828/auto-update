@@ -86,7 +86,7 @@ jobs:
             
  #         echo "Notifying Ubuntu device..."
  #         curl --fail --connect-timeout 10 --max-time 30 -X POST \
- #           -H "X-Hook-Secret: ${{ secrets.UBUNRU_WEBHOOK_SECRET }}" \
+ #           -H "X-Hook-Secret: ${{ secrets.UBUNTU_WEBHOOK_SECRET }}" \
  #           -H "Content-Length: 0" \
  #           "${{ secrets.UBUNTU_WEBHOOK_URL }}"
 
