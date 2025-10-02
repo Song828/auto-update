@@ -17,46 +17,21 @@ jobs:
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y wget
 
-      - name: Build gfw.conf
+      - name: Build gfw.conf if updated
         run: bash build-gfw.sh
 
-      - name: Check for all file changes
+      - name: Download AD rules
+        run: |
+          wget -q -O anti-ad-for-smartdns.conf "https://anti-ad.net/anti-ad-for-smartdns.conf"
+          wget -q -O anti-ad-white-for-smartdns.conf "https://raw.githubusercontent.com/privacy-protection-tools/dead-horse/master/anti-ad-white-for-smartdns.txt"
+
+      - name: Check for file changes
         id: git-check
         run: |
-          # 定义文件名
-          GFW_FILE="gfw.conf"
-          AD_BLACKLIST="anti-ad-for-smartdns.conf"
-          AD_WHITELIST="anti-ad-white-for-smartdns.conf"
-          
-          # 定义远程URL
-          AD_BLACKLIST_URL="https://anti-ad.net/anti-ad-for-smartdns.conf"
-          AD_WHITELIST_URL="https://raw.githubusercontent.com/privacy-protection-tools/dead-horse/master/anti-ad-white-for-smartdns.txt"
-
-          # 初始化变更标记
-          HAS_CHANGES=false
-          
-          # 1. 检查 GFW 规则
-          if ! diff -q <(tail -n +2 "$GFW_FILE") <(git show HEAD:"$GFW_FILE" 2>/dev/null | tail -n +2); then
-            echo "::notice::GFW 规则有更新."
-            HAS_CHANGES=true
-          fi
-          
-          # 2. 检查广告黑名单
-          wget -q -O "$AD_BLACKLIST" "$AD_BLACKLIST_URL"
-          if ! diff -q "$AD_BLACKLIST" <(git show HEAD:"$AD_BLACKLIST" 2>/dev/null); then
-            echo "::notice::广告黑名单有更新."
-            HAS_CHANGES=true
-          fi
-
-          # 3. 检查广告白名单
-          wget -q -O "$AD_WHITELIST" "$AD_WHITELIST_URL"
-          if ! diff -q "$AD_WHITELIST" <(git show HEAD:"$AD_WHITELIST" 2>/dev/null); then
-            echo "::notice::广告白名单有更新."
-            HAS_CHANGES=true
-          fi
-          
-          # 根据最终标记设置输出
-          if [ "$HAS_CHANGES" == "true" ]; then
+          # 使用 git status 检查是否有任何被追踪的文件发生了变化
+          # --porcelain 会在有变更时输出内容，无变更时无输出
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "::notice::检测到规则文件更新，准备提交。"
             echo "changes=true" >> $GITHUB_OUTPUT
           else
             echo "::notice::所有规则均无更新，跳过提交。"
@@ -69,6 +44,7 @@ jobs:
         run: |
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
+          # 添加所有可能变更的文件
           git add gfw.conf anti-ad-for-smartdns.conf anti-ad-white-for-smartdns.conf
           git commit -m "Auto update SmartDNS rules at $(date '+%F %T')"
           git push
@@ -76,7 +52,7 @@ jobs:
       - name: Notify clients to update
         if: steps.push_step.outcome == 'success'
         run: |
-          # 定义通知函数，包含重试逻辑
+          # 定义通知函数，包含重试逻辑 (这部分逻辑很健壮，予以保留)
           notify_client() {
             local client_name=$1
             local webhook_url=$2
@@ -119,13 +95,6 @@ jobs:
 
           # 等待所有通知完成
           wait
-
-          # 检查通知是否全部成功
-          if [ $? -eq 0 ]; then
-            echo "::notice::All clients notified successfully."
-          else
-            echo "::error::One or more client notifications failed."
-          fi
 
       - name: Job Summary
         if: always()
