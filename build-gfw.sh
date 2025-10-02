@@ -7,7 +7,7 @@ set -e
 # --- 变量定义 ---
 TMP_DIR="/tmp/smartdns_rules"
 TMP1="$TMP_DIR/temp_gfwlist1"
-TMP2="$TMP_dir/temp_gfwlist2"
+TMP2="$TMP_DIR/temp_gfwlist2"
 TMP3="$TMP_DIR/temp_gfwlist3"
 TMP_ALL="$TMP_DIR/temp_gfwlist_all"
 TMP_NEW_BODY="$TMP_DIR/temp_new_body.conf"
