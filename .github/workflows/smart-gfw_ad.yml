@@ -35,26 +35,38 @@ jobs:
           # 初始化变更标记
           HAS_CHANGES=false
           
-          # 1. 检查 GFW 规则
-          if ! diff -q <(tail -n +2 "$GFW_FILE") <(git show HEAD:"$GFW_FILE" 2>/dev/null | tail -n +2); then
-            echo "::notice::GFW 规则有更新."
+          # ===================== 核心优化点 V2 =====================
+          # 1. 检查 GFW 规则 (忽略时间戳和排序)
+          # 通过对规则内容进行排序后，再计算 SHA256 哈希值，确保比较逻辑与域名顺序无关。
+          NEW_GFW_HASH=$(tail -n +2 "$GFW_FILE" | sort | sha256sum | awk '{print $1}')
+          OLD_GFW_HASH=$(git show HEAD:"$GFW_FILE" 2>/dev/null | tail -n +2 | sort | sha256sum | awk '{print $1}')
+
+          if [ "$NEW_GFW_HASH" != "$OLD_GFW_HASH" ]; then
+            echo "::notice::GFW 规则核心内容有更新."
             HAS_CHANGES=true
           fi
           
-          # 2. 检查广告黑名单
+          # 2. 检查广告黑名单 (同样采用排序后哈希，确保顺序无关)
           wget -q -O "$AD_BLACKLIST" "$AD_BLACKLIST_URL"
-          if ! diff -q "$AD_BLACKLIST" <(git show HEAD:"$AD_BLACKLIST" 2>/dev/null); then
+          NEW_AD_BLACK_HASH=$(sort "$AD_BLACKLIST" | sha256sum | awk '{print $1}')
+          OLD_AD_BLACK_HASH=$(git show HEAD:"$AD_BLACKLIST" 2>/dev/null | sort | sha256sum | awk '{print $1}')
+
+          if [ "$NEW_AD_BLACK_HASH" != "$OLD_AD_BLACK_HASH" ]; then
             echo "::notice::广告黑名单有更新."
             HAS_CHANGES=true
           fi
 
-          # 3. 检查广告白名单
+          # 3. 检查广告白名单 (同样采用排序后哈希)
           wget -q -O "$AD_WHITELIST" "$AD_WHITELIST_URL"
-          if ! diff -q "$AD_WHITELIST" <(git show HEAD:"$AD_WHITELIST" 2>/dev/null); then
+          NEW_AD_WHITE_HASH=$(sort "$AD_WHITELIST" | sha256sum | awk '{print $1}')
+          OLD_AD_WHITE_HASH=$(git show HEAD:"$AD_WHITELIST" 2>/dev/null | sort | sha256sum | awk '{print $1}')
+          
+          if [ "$NEW_AD_WHITE_HASH" != "$OLD_AD_WHITE_HASH" ]; then
             echo "::notice::广告白名单有更新."
             HAS_CHANGES=true
           fi
-          
+          # =========================================================
+
           # 根据最终标记设置输出
           if [ "$HAS_CHANGES" == "true" ]; then
             echo "changes=true" >> $GITHUB_OUTPUT
@@ -69,14 +81,14 @@ jobs:
         run: |
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
-          git add gfw.conf anti-ad-for-smartdns.conf anti-ad-white-for-smartdns.conf
+          git add "$GFW_FILE" "$AD_BLACKLIST" "$AD_WHITELIST"
           git commit -m "Auto update SmartDNS rules at $(date '+%F %T')"
           git push
 
       - name: Notify clients to update
         if: steps.push_step.outcome == 'success'
         run: |
-          # 定义通知函数，包含重试逻辑
+          # 通知逻辑 (保持不变)
           notify_client() {
             local client_name=$1
             local webhook_url=$2
@@ -112,26 +124,15 @@ jobs:
             echo "::error::Failed to notify ${client_name} after $max_attempts attempts (Final Status: $status_code)"
             return 1
           }
-
-          # 并行发送通知
           notify_client "OpenWrt" "${{ secrets.OPENWRT_WEBHOOK_URL }}" "${{ secrets.OPENWRT_WEBHOOK_SECRET }}" &
           notify_client "Ubuntu" "${{ secrets.UBUNTU_WEBHOOK_URL }}" "${{ secrets.UBUNTU_WEBHOOK_SECRET }}" &
-
-          # 等待所有通知完成
           wait
-
-          # 检查通知是否全部成功
-          if [ $? -eq 0 ]; then
-            echo "::notice::All clients notified successfully."
-          else
-            echo "::error::One or more client notifications failed."
-          fi
 
       - name: Job Summary
         if: always()
         run: |
-          if [[ ${{ steps.git-check.outputs.changes }} == 'true' ]]; then
-            echo "✅ 本次运行完成：检测到规则更新，并已成功推送到仓库和客户端。"
+          if [[ steps.git-check.outputs.changes == 'true' ]]; then
+            echo "✅ 本次运行完成：检测到规则更新，并已成功推送到仓库和客户端。" >> $GITHUB_STEP_SUMMARY
           else
-            echo "☑️ 本次运行完成：规则列表无变化，未执行任何推送操作。"
+            echo "☑️ 本次运行完成：规则列表无变化，未执行任何推送操作。" >> $GITHUB_STEP_SUMMARY
           fi
