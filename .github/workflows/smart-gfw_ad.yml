@@ -52,7 +52,7 @@ jobs:
       - name: Notify clients to update
         if: steps.push_step.outcome == 'success'
         run: |
-          # 定义通知函数，包含重试逻辑 (这部分逻辑很健壮，予以保留)
+          # 定义通知函数，包含重试逻辑
           notify_client() {
             local client_name=$1
             local webhook_url=$2
