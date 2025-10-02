@@ -2,7 +2,7 @@ name: Update SmartDNS Rules（GFW+AD）
 
 on:
   schedule:
-    - cron: "0 */1 * * *"   # 每小时运行一次（UTC时间）
+    - cron: "0 */2 * * *"   # 每小时运行一次（UTC时间）
   workflow_dispatch:       # 允许手动触发
 
 jobs:
@@ -20,43 +20,19 @@ jobs:
       - name: Build gfw.conf
         run: bash build-gfw.sh
 
-      - name: Check for all file changes
+      - name: Download ad-lists and check for all file changes
         id: git-check
         run: |
-          # 定义文件名
-          GFW_FILE="gfw.conf"
+          # 下载最新的广告规则文件
           AD_BLACKLIST="anti-ad-for-smartdns.conf"
           AD_WHITELIST="anti-ad-white-for-smartdns.conf"
-          
-          # 定义远程URL
-          AD_BLACKLIST_URL="https://anti-ad.net/anti-ad-for-smartdns.conf"
-          AD_WHITELIST_URL="https://raw.githubusercontent.com/privacy-protection-tools/dead-horse/master/anti-ad-white-for-smartdns.txt"
+          wget -q -O "$AD_BLACKLIST" "https://anti-ad.net/anti-ad-for-smartdns.conf"
+          wget -q -O "$AD_WHITELIST" "https://raw.githubusercontent.com/privacy-protection-tools/dead-horse/master/anti-ad-white-for-smartdns.txt"
 
-          # 初始化变更标记
-          HAS_CHANGES=false
-          
-          # 1. 检查 GFW 规则
-          if ! diff -q <(tail -n +2 "$GFW_FILE") <(git show HEAD:"$GFW_FILE" 2>/dev/null | tail -n +2); then
-            echo "::notice::GFW 规则有更新."
-            HAS_CHANGES=true
-          fi
-          
-          # 2. 检查广告黑名单
-          wget -q -O "$AD_BLACKLIST" "$AD_BLACKLIST_URL"
-          if ! diff -q "$AD_BLACKLIST" <(git show HEAD:"$AD_BLACKLIST" 2>/dev/null); then
-            echo "::notice::广告黑名单有更新."
-            HAS_CHANGES=true
-          fi
-
-          # 3. 检查广告白名单
-          wget -q -O "$AD_WHITELIST" "$AD_WHITELIST_URL"
-          if ! diff -q "$AD_WHITELIST" <(git show HEAD:"$AD_WHITELIST" 2>/dev/null); then
-            echo "::notice::广告白名单有更新."
-            HAS_CHANGES=true
-          fi
-          
-          # 根据最终标记设置输出
-          if [ "$HAS_CHANGES" == "true" ]; then
+          # 使用 git status 检查是否有任何文件（gfw.conf 或广告规则）被修改
+          # --porcelain 会在有改动时输出内容，无改动时输出为空
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::notice::检测到规则文件更新，准备提交。"
             echo "changes=true" >> $GITHUB_OUTPUT
           else
             echo "::notice::所有规则均无更新，跳过提交。"
@@ -64,15 +40,15 @@ jobs:
           fi
 
       - name: Commit and push if changed
-        id: push_step
         if: steps.git-check.outputs.changes == 'true'
         run: |
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
-          git add gfw.conf anti-ad-for-smartdns.conf anti-ad-white-for-smartdns.conf
+          # git add . 会自动暂存所有被修改或新增的文件
+          git add .
           git commit -m "Auto update SmartDNS rules at $(date '+%F %T')"
           git push
-
+          
       - name: Notify clients to update
         if: steps.push_step.outcome == 'success'
         run: |
