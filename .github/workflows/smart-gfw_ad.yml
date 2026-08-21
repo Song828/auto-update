@@ -20,6 +20,49 @@ jobs:
       - name: Build gfw.conf if updated
         run: bash build-gfw.sh
 
+      # ================= 新增：gfw.conf 去重步骤 =================
+      - name: Deduplicate gfw.conf against custom rules
+        run: |
+          # 1. 定义需要比对的自定义配置文件列表
+          TARGET_FILES=("ai.conf" "git.conf" "other.conf" "tiktok.conf" "z-library.conf" "apkpure.conf")
+          
+          # 2. 筛选出实际存在的配置文件
+          EXISTING_FILES=()
+          for file in "${TARGET_FILES[@]}"; do
+            if [ -f "$file" ]; then
+              EXISTING_FILES+=("$file")
+            fi
+          done
+
+          if [ ${#EXISTING_FILES[@]} -eq 0 ]; then
+            echo "::notice::未找到任何自定义规则文件，跳过去重步骤。"
+            exit 0
+          fi
+
+          # 3. 提取所有自定义文件中的 /domain/ 规则字串并去重存入临时文件
+          grep -oE '/[a-zA-Z0-9._-]+/' "${EXISTING_FILES[@]}" | awk -F: '{print $2}' | sort -u | grep -v '^//$' > custom_patterns.txt
+
+          if [ ! -s custom_patterns.txt ]; then
+            echo "::notice::自定义规则文件中未检测到有效域名，跳过去重。"
+            rm -f custom_patterns.txt
+            exit 0
+          fi
+
+          echo "::notice::提取到 $(wc -l < custom_patterns.txt) 个待比对的自定义域名规则。"
+
+          # 4. 从 gfw.conf 中匹配并删除所有重复的域名行
+          if [ -f "gfw.conf" ]; then
+            BEFORE_COUNT=$(wc -l < gfw.conf)
+            grep -v -F -f custom_patterns.txt gfw.conf > gfw.conf.tmp || true
+            mv gfw.conf.tmp gfw.conf
+            AFTER_COUNT=$(wc -l < gfw.conf)
+            REMOVED=$((BEFORE_COUNT - AFTER_COUNT))
+            echo "::notice::已成功从 gfw.conf 中剔除 $REMOVED 条重复域名规则。"
+          fi
+
+          rm -f custom_patterns.txt
+      # ========================================================
+
       - name: Download AD rules
         run: |
           wget -q -O anti-ad-for-smartdns.conf "https://anti-ad.net/anti-ad-for-smartdns.conf"
@@ -28,8 +71,6 @@ jobs:
       - name: Check for file changes
         id: git-check
         run: |
-          # 使用 git status 检查是否有任何被追踪的文件发生了变化
-          # --porcelain 会在有变更时输出内容，无变更时无输出
           if [[ -n $(git status --porcelain) ]]; then
             echo "::notice::检测到规则文件更新，准备提交。"
             echo "changes=true" >> $GITHUB_OUTPUT
@@ -44,7 +85,6 @@ jobs:
         run: |
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
-          # 添加所有可能变更的文件
           git add gfw.conf anti-ad-for-smartdns.conf anti-ad-white-for-smartdns.conf
           git commit -m "Auto update SmartDNS rules at $(date '+%F %T')"
           git push
@@ -52,7 +92,6 @@ jobs:
       - name: Notify clients to update
         if: steps.push_step.outcome == 'success'
         run: |
-          # 定义通知函数，包含重试逻辑
           notify_client() {
             local client_name=$1
             local webhook_url=$2
@@ -89,11 +128,9 @@ jobs:
             return 1
           }
 
-          # 并行发送通知
           notify_client "OpenWrt" "${{ secrets.OPENWRT_WEBHOOK_URL }}" "${{ secrets.OPENWRT_WEBHOOK_SECRET }}" &
           notify_client "Ubuntu" "${{ secrets.UBUNTU_WEBHOOK_URL }}" "${{ secrets.UBUNTU_WEBHOOK_SECRET }}" &
 
-          # 等待所有通知完成
           wait
 
       - name: Job Summary
