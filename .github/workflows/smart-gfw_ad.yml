@@ -21,7 +21,7 @@ jobs:
       - name: Build gfw.conf
         run: bash build-gfw.sh
 
-      # 1. 精确去重：POSIX 正则过滤注释，统一域名为小写，实现大小写不敏感全匹配
+      # 1. 精确去重：引入 trim 强化兼容性，完美适配 domain-rules /.../ 格式
       - name: Deduplicate gfw.conf against custom rules
         run: |
           TARGET_FILES=("ai.conf" "git.conf" "other.conf" "tiktok.conf" "z-library.conf" "apkpure.conf")
@@ -35,33 +35,33 @@ jobs:
             exit 0
           fi
 
-          # 提取纯域名并转化为小写（tolower）
+          # 提取纯域名并转化为小写
           grep -v '^[[:space:]]*#' "${EXISTING_FILES[@]}" | grep -oE '/[a-zA-Z0-9._-]+/' | awk -F'/' '{print tolower($2)}' | sort -u | grep -v '^$' > custom_domains.txt
 
           if [ ! -s custom_domains.txt ]; then
-            echo "::notice::自定义规则文件中未检测到有效域名，跳过去重。"
+            echo "::notice::未检测到有效域名，跳过去重。"
             rm -f custom_domains.txt
             exit 0
           fi
 
-          echo "::notice::提取到 $(wc -l < custom_domains.txt) 个待比对的自定义纯域名。"
-
           if [ -f "gfw.conf" ]; then
             BEFORE_COUNT=$(wc -l < gfw.conf)
             awk -F'/' '
-              NR==FNR { custom[tolower($1)]=1; next }
-              !(tolower($2) in custom)
+              function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+              NR==FNR { custom[tolower(trim($1))]=1; next }
+              {
+                domain = tolower(trim($2))
+                if (!(domain in custom)) { print $0 }
+              }
             ' custom_domains.txt gfw.conf > gfw.conf.tmp
 
             mv gfw.conf.tmp gfw.conf
             AFTER_COUNT=$(wc -l < gfw.conf)
-            REMOVED=$((BEFORE_COUNT - AFTER_COUNT))
-            echo "::notice::已成功从 gfw.conf 中剔除 $REMOVED 条重复的域名规则。"
+            echo "::notice::已成功剔除 $((BEFORE_COUNT - AFTER_COUNT)) 条重复规则。"
           fi
-
           rm -f custom_domains.txt
 
-      # 2. AD 规则原子化下载（.tmp 隔离）与严格 SmartDNS 语法校验
+      # 2. AD 规则原子化下载与严格语法校验
       - name: Download and validate AD rules
         run: |
           download_rule() {
@@ -72,38 +72,14 @@ jobs:
             echo "Downloading ${output}..."
             rm -f "$tmp"
 
-            # 换用 -sS：正常静默，报错时输出错误文本
-            curl -fL \
-              --retry 3 \
-              --retry-delay 2 \
-              --connect-timeout 15 \
-              --max-time 60 \
-              -sS \
-              -o "$tmp" \
-              "$url" || { echo "::error::${output} Curl 下载请求失败"; rm -f "$tmp"; return 1; }
+            curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 -sS -o "$tmp" "$url" || { echo "::error::下载失败"; rm -f "$tmp"; return 1; }
 
-            # 校验 1: 非空文件
-            if [ ! -s "$tmp" ]; then
-              echo "::error::${output} 校验失败：文件内容为空！"
+            if [ ! -s "$tmp" ] || grep -qi "<html>\|<!DOCTYPE" "$tmp" || ! grep -q -E 'domain /|domain-set|address /' "$tmp"; then
+              echo "::error::${output} 校验失败（空文件/HTML响应/语法错误）！"
               rm -f "$tmp"
               return 1
             fi
 
-            # 校验 2: 防止 HTML 响应页
-            if grep -qi "<html>\|<!DOCTYPE" "$tmp"; then
-              echo "::error::${output} 校验失败：包含 HTML 异常响应！"
-              rm -f "$tmp"
-              return 1
-            fi
-
-            # 校验 3: 严格 SmartDNS 规则结构匹配 (domain / 或 address / 或 domain-set)
-            if ! grep -q -E 'domain /|domain-set|address /' "$tmp"; then
-              echo "::error::${output} 校验失败：未匹配到有效的 SmartDNS 规则结构！"
-              rm -f "$tmp"
-              return 1
-            fi
-
-            # 校验全部通过后，原子覆盖正式文件
             mv "$tmp" "$output"
             echo "::notice::${output} 下载并验证成功。"
           }
@@ -111,7 +87,7 @@ jobs:
           download_rule "https://anti-ad.net/anti-ad-for-smartdns.conf" "anti-ad-for-smartdns.conf" || exit 1
           download_rule "https://raw.githubusercontent.com/privacy-protection-tools/dead-horse/master/anti-ad-white-for-smartdns.txt" "anti-ad-white-for-smartdns.conf" || exit 1
 
-      # 3. 忽略注释与时间戳行（使用 POSIX 正则），无实质规则变化则还原 gfw.conf
+      # 3. 忽略注释与时间戳行对比
       - name: Revert gfw.conf if only timestamp changed
         run: |
           if [ -f "gfw.conf" ] && git show HEAD:gfw.conf >/dev/null 2>&1; then
@@ -119,22 +95,20 @@ jobs:
             git show HEAD:gfw.conf | grep -v '^[[:space:]]*#' > /tmp/gfw_old.conf || true
 
             if cmp -s /tmp/gfw_new.conf /tmp/gfw_old.conf; then
-              echo "::notice::gfw.conf 仅注释/时间戳变动，规则内容未改变，还原该文件。"
+              echo "::notice::仅注释变动，内容未改，还原文件。"
               git checkout HEAD -- gfw.conf
             fi
             rm -f /tmp/gfw_new.conf /tmp/gfw_old.conf
           fi
 
-      # 4. 锁定目标文件变更检查
+      # 4. 锁定目标文件变更检查与提交（修正为亚洲/上海时区）
       - name: Check for file changes
         id: git-check
         run: |
           TRACKED_FILES=("gfw.conf" "anti-ad-for-smartdns.conf" "anti-ad-white-for-smartdns.conf")
           if [[ -n $(git status --porcelain -- "${TRACKED_FILES[@]}") ]]; then
-            echo "::notice::检测到目标规则文件发生变化，准备提交。"
             echo "changes=true" >> $GITHUB_OUTPUT
           else
-            echo "::notice::所有目标规则文件均无更新，跳过提交与推送。"
             echo "changes=false" >> $GITHUB_OUTPUT
           fi
 
@@ -145,10 +119,10 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
           git add gfw.conf anti-ad-for-smartdns.conf anti-ad-white-for-smartdns.conf
-          git commit -m "Auto update SmartDNS rules at $(date '+%F %T')"
+          git commit -m "Auto update SmartDNS rules at $(TZ=Asia/Shanghai date '+%F %T')"
           git push
 
-      # 5. 通知客户端更新（支持 2xx 状态码判断）
+      # 5. 并行通知客户端更新
       - name: Notify clients to update
         id: notify_step
         if: steps.push_step.outcome == 'success'
@@ -157,40 +131,21 @@ jobs:
             local client_name=$1
             local webhook_url=$2
             local webhook_secret=$3
-            local max_attempts=3
             local attempt=1
             local status_code
 
             if [ -z "$webhook_url" ] || [ -z "$webhook_secret" ]; then
-              echo "::error::${client_name} Webhook URL 或 Secret 未配置，取消推送！"
               return 1
             fi
 
-            echo "Notifying ${client_name}..."
-            while [ $attempt -le $max_attempts ]; do
-              echo "Attempt $attempt of $max_attempts for ${client_name}..."
-              status_code=$(curl --write-out "%{http_code}" --silent --output /dev/null \
-                --connect-timeout 5 \
-                --max-time 10 \
-                --retry 2 \
-                --retry-delay 2 \
-                --retry-max-time 30 \
-                -X POST \
-                -H "X-Hook-Secret: ${webhook_secret}" \
-                -H "Content-Length: 0" \
-                "${webhook_url}")
-
+            while [ $attempt -le 3 ]; do
+              status_code=$(curl --write-out "%{http_code}" --silent --output /dev/null -X POST -H "X-Hook-Secret: ${webhook_secret}" -H "Content-Length: 0" "${webhook_url}")
               if [[ "$status_code" =~ ^2[0-9][0-9]$ ]]; then
-                echo "::notice::Successfully notified ${client_name} (Status: $status_code)"
+                echo "::notice::Successfully notified ${client_name}"
                 return 0
-              else
-                echo "::warning::Failed to notify ${client_name} (Status: $status_code) on attempt $attempt"
-                sleep 2
               fi
-              ((attempt++))
+              sleep 2; ((attempt++))
             done
-
-            echo "::error::Failed to notify ${client_name} after $max_attempts attempts (Final Status: $status_code)"
             return 1
           }
 
@@ -204,40 +159,14 @@ jobs:
           wait $UBUNTU_PID || UBUNTU_FAILED=1
 
           if [ "$OPENWRT_FAILED" = "1" ] || [ "$UBUNTU_FAILED" = "1" ]; then
-            echo "::error::部分客户端通知失败，请检查运行日志。"
             exit 1
           fi
 
-      # 6. 精细化显示各个步骤的状态
+      # 6. 生成任务可视化摘要
       - name: Job Summary
         if: always()
         run: |
           echo "### 📊 SmartDNS Rules Task Summary" >> $GITHUB_STEP_SUMMARY
-          
-          CHANGES="${{ steps.git-check.outputs.changes }}"
-          PUSH_OUTCOME="${{ steps.push_step.outcome }}"
-          NOTIFY_OUTCOME="${{ steps.notify_step.outcome }}"
-
-          if [[ "$CHANGES" == 'true' ]]; then
-            echo "* **规则变更检测**: 🟡 检测到上游规则已更新" >> $GITHUB_STEP_SUMMARY
-            
-            if [[ "$PUSH_OUTCOME" == 'success' ]]; then
-              echo "* **Git Commit & Push**: ✅ 成功推送到远端仓库" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "* **Git Commit & Push**: ❌ 推送失败" >> $GITHUB_STEP_SUMMARY
-            fi
-
-            if [[ "$NOTIFY_OUTCOME" == 'success' ]]; then
-              echo "* **客户端 Webhook 通知**: ✅ OpenWrt 与 Ubuntu 均正常触发更新" >> $GITHUB_STEP_SUMMARY
-            elif [[ "$NOTIFY_OUTCOME" == 'failure' ]]; then
-              echo "* **客户端 Webhook 通知**: ⚠️ 存在发送失败或 Secret/URL 缺失" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "* **客户端 Webhook 通知**: ➖ 未执行" >> $GITHUB_STEP_SUMMARY
-            fi
-          elif [[ "$CHANGES" == 'false' ]]; then
-            echo "* **规则变更检测**: 🟢 所有规则文件保持最新，无需更新" >> $GITHUB_STEP_SUMMARY
-            echo "* **提交与推送**: ➖ 已跳过" >> $GITHUB_STEP_SUMMARY
-            echo "* **客户端 Webhook 通知**: ➖ 已跳过" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "* **规则变更检测**: ⚪ 任务异常或已被跳过" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "* **变更状态**: ${{ steps.git-check.outputs.changes == 'true' && '🟡 需更新' || '🟢 无需更新' }}" >> $GITHUB_STEP_SUMMARY
+          echo "* **推送状态**: ${{ steps.push_step.outcome || '➖ 跳过' }}" >> $GITHUB_STEP_SUMMARY
+          echo "* **Webhook 通知**: ${{ steps.notify_step.outcome || '➖ 跳过' }}" >> $GITHUB_STEP_SUMMARY
