@@ -9,6 +9,7 @@ TMP_DIR="/tmp/smartdns_rules"
 TMP1="$TMP_DIR/temp_gfwlist1"
 TMP2="$TMP_DIR/temp_gfwlist2"
 TMP3="$TMP_DIR/temp_gfwlist3"
+TMP4="$TMP_DIR/temp_gfwlist4"  # 新增：用于存储附加代理域名
 TMP_ALL="$TMP_DIR/temp_gfwlist_all"
 TMP_NEW_BODY="$TMP_DIR/temp_new_body.conf"
 OUTFILE="gfw.conf"
@@ -22,7 +23,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 echo "开始构建 gfw.conf 规则..."
 
 # --- 下载与处理规则 ---
-echo "1/4: 下载 gfwlist..."
+echo "1/5: 下载 gfwlist..."
 wget -qO- https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt | \
     base64 -d | sort -u | sed '/^$\|@@/d' | \
     sed 's#!.\+##; s#|##g; s#@##g; s#http:\/\/##; s#https:\/\/##;' | \
@@ -31,16 +32,25 @@ wget -qO- https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt |
     grep '^[0-9a-zA-Z\.-]\+$' | grep '\.' | \
     sed 's#^\.\+##' | sort -u > "$TMP1"
 
-echo "2/4: 下载 fancyss 规则..."
+echo "2/5: 下载 fancyss 规则..."
 wget -qO- https://raw.githubusercontent.com/hq450/fancyss/master/rules/gfwlist.conf | \
     sed 's/ipset=\/\.//g; s/\/gfwlist//g; /^server/d' > "$TMP2"
 
-echo "3/4: 下载 Loyalsoldier 规则..."
+echo "3/5: 下载 Loyalsoldier 规则..."
 wget -qO- https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/gfw.txt > "$TMP3"
 
+# --- 新增步骤：下载并清洗附加代理域名列表 ---
+echo "4/5: 下载附加 proxy-domain-list 规则..."
+# 使用 awk 兼容处理：如果存在斜杠/，则提取第二部分（纯域名）；如果没有斜杠，则直接取整行
+wget -qO- https://raw.githubusercontent.com/zxlhhyccc/smartdns-list-scripts/refs/heads/master/proxy-domain-list.conf | \
+    grep -v '^[[:space:]]*#' | \
+    awk -F'/' '/\//{print $2}; !/\//{print $1}' | \
+    sed '/^$/d; s/^[ \t]*//; s/[ \t]*$//' > "$TMP4"
+
 # --- 合并、去重并生成新规则主体 ---
-echo "4/4: 合并规则并生成 SmartDNS 格式..."
-cat "$TMP1" "$TMP2" "$TMP3" | sort -u | sed '/^$/d; s/^\.*//g' > "$TMP_ALL"
+echo "5/5: 合并规则并生成 SmartDNS 格式..."
+# 将 TMP4 一并加入合并流程
+cat "$TMP1" "$TMP2" "$TMP3" "$TMP4" | sort -u | sed '/^$/d; s/^\.*//g' > "$TMP_ALL"
 sed 's/^/domain-rules \//; s/$/\/ -nameserver ext -ipset ext -address #6/' "$TMP_ALL" > "$TMP_NEW_BODY"
 
 # --- 对比并决定是否更新 ---
