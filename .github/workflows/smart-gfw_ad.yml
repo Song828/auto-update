@@ -1,4 +1,4 @@
-name: Update SmartDNS Rules（GFW+AD）
+name: Update SmartDNS Rules（GFW+AD+IPList）
 
 on:
   schedule:
@@ -15,13 +15,15 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
+      # 1. 检出代码 (使用 v5 消除 Node.js 20 弃用警告)
       - name: Checkout repo
         uses: actions/checkout@v5
 
+      # 2. 构建基础 GFW 规则 (由 build-gfw.sh 处理上游抓取与合并)
       - name: Build gfw.conf
         run: bash build-gfw.sh
 
-      # 1. 精确去重：引入 trim 强化兼容性，完美适配 domain-rules /.../ 格式
+      # 3. 精确去重：从 gfw.conf 剔除 local 目录下的自定义域名
       - name: Deduplicate gfw.conf against custom rules
         run: |
           TARGET_FILES=("ai.conf" "git.conf" "other.conf" "tiktok.conf" "z-library.conf" "apkpure.conf")
@@ -39,7 +41,6 @@ jobs:
           grep -v '^[[:space:]]*#' "${EXISTING_FILES[@]}" | grep -oE '/[a-zA-Z0-9._-]+/' | awk -F'/' '{print tolower($2)}' | sort -u | grep -v '^$' > custom_domains.txt
 
           if [ ! -s custom_domains.txt ]; then
-            echo "::notice::未检测到有效域名，跳过去重。"
             rm -f custom_domains.txt
             exit 0
           fi
@@ -57,12 +58,12 @@ jobs:
 
             mv gfw.conf.tmp gfw.conf
             AFTER_COUNT=$(wc -l < gfw.conf)
-            echo "::notice::已成功剔除 $((BEFORE_COUNT - AFTER_COUNT)) 条重复规则。"
+            echo "::notice::已成功从 gfw.conf 中剔除 $((BEFORE_COUNT - AFTER_COUNT)) 条与本地规则重复的域名。"
           fi
           rm -f custom_domains.txt
 
-      # 2. AD 规则原子化下载与严格语法校验
-      - name: Download and validate AD rules
+      # 4. 原子化下载与严格语法校验 (整合 AD 规则与 IP 黑白名单)
+      - name: Download and validate rules
         run: |
           download_rule() {
             local url="$1"
@@ -74,7 +75,8 @@ jobs:
 
             curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 -sS -o "$tmp" "$url" || { echo "::error::下载失败"; rm -f "$tmp"; return 1; }
 
-            if [ ! -s "$tmp" ] || grep -qi "<html>\|<!DOCTYPE" "$tmp" || ! grep -q -E 'domain /|domain-set|address /' "$tmp"; then
+            # 校验包含 SmartDNS 域名规则及黑白名单特征
+            if [ ! -s "$tmp" ] || grep -qi "<html>\|<!DOCTYPE" "$tmp" || ! grep -q -E 'domain /|domain-set|address /|blacklist-ip|whitelist-ip' "$tmp"; then
               echo "::error::${output} 校验失败（空文件/HTML响应/语法错误）！"
               rm -f "$tmp"
               return 1
@@ -84,10 +86,15 @@ jobs:
             echo "::notice::${output} 下载并验证成功。"
           }
 
+          # 下载广告过滤规则
           download_rule "https://anti-ad.net/anti-ad-for-smartdns.conf" "anti-ad-for-smartdns.conf" || exit 1
           download_rule "https://raw.githubusercontent.com/privacy-protection-tools/dead-horse/master/anti-ad-white-for-smartdns.txt" "anti-ad-white-for-smartdns.conf" || exit 1
+          
+          # 下载 IP 黑白名单
+          download_rule "https://raw.githubusercontent.com/zxlhhyccc/smartdns-list-scripts/refs/heads/master/blacklist-ip.conf" "blacklist-ip.conf" || exit 1
+          download_rule "https://raw.githubusercontent.com/zxlhhyccc/smartdns-list-scripts/refs/heads/master/whitelist-ip.conf" "whitelist-ip.conf" || exit 1
 
-      # 3. 忽略注释与时间戳行对比
+      # 5. 忽略注释与时间戳行对比 (避免产生无意义的 Commit)
       - name: Revert gfw.conf if only timestamp changed
         run: |
           if [ -f "gfw.conf" ] && git show HEAD:gfw.conf >/dev/null 2>&1; then
@@ -101,28 +108,29 @@ jobs:
             rm -f /tmp/gfw_new.conf /tmp/gfw_old.conf
           fi
 
-      # 4. 锁定目标文件变更检查与提交（修正为亚洲/上海时区）
+      # 6. 锁定目标文件变更检查
       - name: Check for file changes
         id: git-check
         run: |
-          TRACKED_FILES=("gfw.conf" "anti-ad-for-smartdns.conf" "anti-ad-white-for-smartdns.conf")
+          TRACKED_FILES=("gfw.conf" "anti-ad-for-smartdns.conf" "anti-ad-white-for-smartdns.conf" "blacklist-ip.conf" "whitelist-ip.conf")
           if [[ -n $(git status --porcelain -- "${TRACKED_FILES[@]}") ]]; then
             echo "changes=true" >> $GITHUB_OUTPUT
           else
             echo "changes=false" >> $GITHUB_OUTPUT
           fi
 
+      # 7. 提交并推送到仓库 (强制使用亚洲/上海时区)
       - name: Commit and push if changed
         id: push_step
         if: steps.git-check.outputs.changes == 'true'
         run: |
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
-          git add gfw.conf anti-ad-for-smartdns.conf anti-ad-white-for-smartdns.conf
+          git add gfw.conf anti-ad-for-smartdns.conf anti-ad-white-for-smartdns.conf blacklist-ip.conf whitelist-ip.conf
           git commit -m "Auto update SmartDNS rules at $(TZ=Asia/Shanghai date '+%F %T')"
           git push
 
-      # 5. 并行通知客户端更新
+      # 8. 并行通知客户端 Webhook 更新
       - name: Notify clients to update
         id: notify_step
         if: steps.push_step.outcome == 'success'
@@ -162,7 +170,7 @@ jobs:
             exit 1
           fi
 
-      # 6. 生成任务可视化摘要
+      # 9. 生成任务可视化摘要
       - name: Job Summary
         if: always()
         run: |
