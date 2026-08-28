@@ -2,7 +2,7 @@ name: Update SmartDNS Rules（GFW+AD+IPList）
 
 on:
   schedule:
-    - cron: "0 */6 * * *"   # 每*小时运行一次（UTC时间）
+    - cron: "0 19 * * *"   # UTC 时间 19:00 运行（对应北京时间次日凌晨 03:00）
   workflow_dispatch:       # 允许手动触发
 
 concurrency:
