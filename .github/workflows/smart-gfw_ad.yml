@@ -29,9 +29,7 @@ jobs:
           TARGET_FILES=("ai.conf" "git.conf" "other.conf" "tiktok.conf" "z-library.conf" "apkpure.conf")
           EXISTING_FILES=()
           for file in "${TARGET_FILES[@]}"; do
-            if [ -f "$file" ]; then
-              EXISTING_FILES+=("$file")
-            fi
+            [ -f "$file" ] && EXISTING_FILES+=("$file")
           done
 
           if [ ${#EXISTING_FILES[@]} -eq 0 ]; then
@@ -40,7 +38,7 @@ jobs:
           fi
 
           # 提取纯域名并转化为小写
-          grep -v '^[[:space:]]*#' "${EXISTING_FILES[@]}" | grep -oE '/[a-zA-Z0-9._-]+/' | awk -F'/' '{print tolower($2)}' \vert{} sort -u \vert{} grep -v '^$' > custom_domains.txt
+          grep -v '^[[:space:]]*#' "${EXISTING_FILES[@]}" | grep -oE '/[a-zA-Z0-9._-]+/' | awk -F'/' '{print tolower($2)}' | sort -u | grep -v '^$' > custom_domains.txt
 
           if [ ! -s custom_domains.txt ]; then
             rm -f custom_domains.txt
@@ -68,64 +66,40 @@ jobs:
       - name: Download and validate rules
         run: |
           download_rule() {
-            local output="$1"
-            shift
-            local urls=("$@")
+            local url="$1"
+            local output="$2"
             local tmp="${output}.tmp"
-            local ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
-            for url in "${urls[@]}"; do
-              echo "Downloading ${output} from${url}..."
+            echo "Downloading ${output}..."
+            rm -f "$tmp"
+
+            curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 -sS -o "$tmp" "$url" || { echo "::error::下载失败"; rm -f "$tmp"; return 1; }
+
+            # 校验包含 SmartDNS 域名规则及黑白名单特征
+            if [ ! -s "$tmp" ] || grep -qi "<html>\|<!DOCTYPE" "$tmp" || ! grep -q -E 'domain /|domain-set|address /|blacklist-ip|whitelist-ip' "$tmp"; then
+              echo "::error::${output} 校验失败（空文件/HTML响应/语法错误）！"
               rm -f "$tmp"
+              return 1
+            fi
 
-              if curl -fL -A "$ua" --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 -sS -o "$tmp" "$url"; then
-                # 校验非空、不含 HTML 标签、且包含 SmartDNS 规则特征
-                if [ -s "$tmp" ] && ! grep -qi -e "<html" -e "<!DOCTYPE" "$tmp" && grep -q -e "domain /" -e "domain-set" -e "address /" -e "blacklist-ip" -e "whitelist-ip" "$tmp"; then
-                  mv "$tmp" "$output"
-                  echo "::notice::${output} 下载并验证成功。"
-                  return 0
-                else
-                  echo "::warning::${output} 从 ${url} 下载的文件校验失败（空文件/HTML响应/语法错误），尝试下一个源..."
-                fi
-              else
-                echo "::warning::从 ${url} 下载 ${output} 失败，尝试下一个源..."
-              fi
-              rm -f "$tmp"
-            done
-
-            echo "::error::${output} 所有源均下载或校验失败！"
-            return 1
+            mv "$tmp" "$output"
+            echo "::notice::${output} 下载并验证成功。"
           }
 
-          # 下载广告过滤规则 (优先使用 GitHub Raw 官方仓库源，官网作为备用源)
-          if ! download_rule "anti-ad-for-smartdns.conf" \
-            "https://raw.githubusercontent.com/privacy-protection-tools/anti-AD/master/anti-ad-smartdns.conf" \
-            "https://anti-ad.net/anti-ad-for-smartdns.conf"; then
-            exit 1
-          fi
-
-          if ! download_rule "anti-ad-white-for-smartdns.conf" \
-            "https://raw.githubusercontent.com/privacy-protection-tools/dead-horse/master/anti-ad-white-for-smartdns.txt"; then
-            exit 1
-          fi
+          # 下载广告过滤规则
+          download_rule "https://raw.githubusercontent.com/privacy-protection-tools/anti-AD/master/anti-ad-smartdns.conf" "anti-ad-for-smartdns.conf" || exit 1
+          download_rule "https://raw.githubusercontent.com/privacy-protection-tools/dead-horse/master/anti-ad-white-for-smartdns.txt" "anti-ad-white-for-smartdns.conf" || exit 1
 
           # 下载 IP 黑白名单
-          if ! download_rule "blacklist-ip.conf" \
-            "https://raw.githubusercontent.com/zxlhhyccc/smartdns-list-scripts/refs/heads/master/blacklist-ip.conf"; then
-            exit 1
-          fi
-
-          if ! download_rule "whitelist-ip.conf" \
-            "https://raw.githubusercontent.com/zxlhhyccc/smartdns-list-scripts/refs/heads/master/whitelist-ip.conf"; then
-            exit 1
-          fi
+          download_rule "https://raw.githubusercontent.com/zxlhhyccc/smartdns-list-scripts/refs/heads/master/blacklist-ip.conf" "blacklist-ip.conf" || exit 1
+          download_rule "https://raw.githubusercontent.com/zxlhhyccc/smartdns-list-scripts/refs/heads/master/whitelist-ip.conf" "whitelist-ip.conf" || exit 1
 
       # 5. 忽略注释与时间戳行对比 (避免产生无意义的 Commit)
       - name: Revert gfw.conf if only timestamp changed
         run: |
           if [ -f "gfw.conf" ] && git show HEAD:gfw.conf >/dev/null 2>&1; then
-            grep -v '^[[:space:]]*#' gfw.conf > /tmp/gfw_new.conf 2>/dev/null
-            git show HEAD:gfw.conf | grep -v '^[[:space:]]*#' > /tmp/gfw_old.conf 2>/dev/null
+            grep -v '^[[:space:]]*#' gfw.conf > /tmp/gfw_new.conf || true
+            git show HEAD:gfw.conf | grep -v '^[[:space:]]*#' > /tmp/gfw_old.conf || true
 
             if cmp -s /tmp/gfw_new.conf /tmp/gfw_old.conf; then
               echo "::notice::仅注释变动，内容未改，还原文件。"
@@ -143,7 +117,7 @@ jobs:
           if [[ -n "$CHANGED" ]]; then
             echo "changes=true" >> $GITHUB_OUTPUT
             # 将换行替换为逗号分隔保存
-            echo "changed_files=$(echo "$CHANGED" \vert{} paste -sd "," -)" >> $GITHUB_OUTPUT
+            echo "changed_files=$(echo "$CHANGED" | paste -sd "," -)" >> $GITHUB_OUTPUT
           else
             echo "changes=false" >> $GITHUB_OUTPUT
             echo "changed_files=none" >> $GITHUB_OUTPUT
@@ -172,7 +146,7 @@ jobs:
             local attempt=1
             local status_code
 
-            if [ -z "$webhook_url" -o -z "$webhook_secret" ]; then
+            if [ -z "$webhook_url" ] || [ -z "$webhook_secret" ]; then
               return 1
             fi
 
@@ -193,16 +167,10 @@ jobs:
           notify_client "Ubuntu" "${{ secrets.UBUNTU_WEBHOOK_URL }}" "${{ secrets.UBUNTU_WEBHOOK_SECRET }}" &
           UBUNTU_PID=$!
 
-          OPENWRT_FAILED=0
-          UBUNTU_FAILED=0
-          if ! wait $OPENWRT_PID; then
-            OPENWRT_FAILED=1
-          fi
-          if ! wait $UBUNTU_PID; then
-            UBUNTU_FAILED=1
-          fi
+          wait $OPENWRT_PID || OPENWRT_FAILED=1
+          wait $UBUNTU_PID || UBUNTU_FAILED=1
 
-          if [ "$OPENWRT_FAILED" = "1" -o "$UBUNTU_FAILED" = "1" ]; then
+          if [ "$OPENWRT_FAILED" = "1" ] || [ "$UBUNTU_FAILED" = "1" ]; then
             exit 1
           fi
 
@@ -211,20 +179,15 @@ jobs:
         if: always()
         run: |
           echo "### 📊 SmartDNS Rules Task Summary" >> $GITHUB_STEP_SUMMARY
-          
+          echo "* **变更状态**: ${{ steps.git-check.outputs.changes == 'true' && '🟡 需更新' || '🟢 无需更新' }}" >> $GITHUB_STEP_SUMMARY
+
           if [ "${{ steps.git-check.outputs.changes }}" = "true" ]; then
-            echo "* **变更状态**: 🟡 需更新" >> $GITHUB_STEP_SUMMARY
             echo "* **具体更新文件**:" >> $GITHUB_STEP_SUMMARY
             IFS=',' read -ra FILES <<< "${{ steps.git-check.outputs.changed_files }}"
             for file in "${FILES[@]}"; do
               echo "  - \`$file\`" >> $GITHUB_STEP_SUMMARY
             done
-          else
-            echo "* **变更状态**: 🟢 无需更新" >> $GITHUB_STEP_SUMMARY
           fi
 
-          PUSH_OUTCOME="${{ steps.push_step.outcome }}"
-          echo "* **推送状态**: ${PUSH_OUTCOME:-➖ 跳过}" >> $GITHUB_STEP_SUMMARY
-
-          NOTIFY_OUTCOME="${{ steps.notify_step.outcome }}"
-          echo "* **Webhook 通知**: ${NOTIFY_OUTCOME:-➖ 跳过}" >> $GITHUB_STEP_SUMMARY
+          echo "* **推送状态**: ${{ steps.push_step.outcome || '➖ 跳过' }}" >> $GITHUB_STEP_SUMMARY
+          echo "* **Webhook 通知**: ${{ steps.notify_step.outcome || '➖ 跳过' }}" >> $GITHUB_STEP_SUMMARY
